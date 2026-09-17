@@ -1,0 +1,11 @@
+{
+  "name": "pcg-lab1-color-models",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Лабораторная работа 1 (вариант 3): RGB ↔ XYZ ↔ CIELAB, MVVM, без зависимостей",
+  "scripts": {
+    "test": "node --test",
+    "dev": "python3 -m http.server 8000"
+  }
+}
