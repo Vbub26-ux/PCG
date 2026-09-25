@@ -11,11 +11,10 @@ export class ColorView {
     this.testConsole = document.getElementById("testConsole");
   }
 
-  parseDecimal(text) {
-    const normalized = text.trim().replace(",", ".");
-    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) return null;
-
-    const value = Number(normalized);
+  parseInteger(text) {
+    const trimmed = text.trim();
+    if (!/^[+-]?\d+$/.test(trimmed)) return null;
+    const value = Number(trimmed);
     return Number.isFinite(value) ? value : null;
   }
 
@@ -29,8 +28,8 @@ export class ColorView {
     this.inputs.forEach(element => {
       element.addEventListener("input", event => {
         const value = event.target.type === "range"
-          ? Number(event.target.value)
-          : this.parseDecimal(event.target.value);
+          ? Math.round(Number(event.target.value))
+          : this.parseInteger(event.target.value);
 
         if (value !== null && Number.isFinite(value)) {
           handler(
@@ -74,12 +73,11 @@ export class ColorView {
 
       const value = state[element.dataset.model][element.dataset.channel];
       if (element.type === "range") {
-        element.value = value;
+        element.value = Math.round(value);
         return;
       }
 
-      const precision = Number(element.dataset.precision ?? 3);
-      element.value = Number(value.toFixed(precision)).toString();
+      element.value = Math.round(value).toString();
     });
   }
 
