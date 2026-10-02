@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Информация о графических файлах — Лабораторная работа 2</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%233b6ef6'/><text x='50' y='72' font-size='58' text-anchor='middle' fill='white' font-family='Arial'>i</text></svg>">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <h1>Информация о графических файлах</h1>
+      <p class="subtitle">Лабораторная работа 2 · JPG GIF TIFF BMP PNG PCX · разбор заголовков без внешних библиотек</p>
+      <div class="btn-panel">
+        <label class="btn btn-primary" for="file-folder">Выбрать папку</label>
+        <input type="file" id="file-folder" webkitdirectory multiple hidden>
+        <label class="btn" for="file-files">Выбрать файлы</label>
+        <input type="file" id="file-files" multiple hidden>
+        <button type="button" class="btn" id="btn-csv" disabled>Экспорт CSV</button>
+        <button type="button" class="btn" id="btn-help">Справка</button>
+        <button type="button" class="btn" id="btn-clear" disabled>Очистить</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="dropzone">
+      <p class="dropzone-title">Перетащите папку или файлы сюда</p>
+      <p class="dropzone-hint">JPG · GIF · TIFF · BMP · PNG · PCX — характеристики читаются из заголовков прямо в браузере</p>
+    </div>
+
+    <div id="progress-wrap" hidden>
+      <div id="progress-bar"></div>
+      <span id="progress-text"></span>
+    </div>
+
+    <section id="summary" hidden>
+      <span id="stat-total"></span>
+      <span id="stat-ok"></span>
+      <span id="stat-error"></span>
+      <span id="stat-skipped"></span>
+      <span id="stat-time"></span>
+      <span id="stat-formats"></span>
+    </section>
+
+    <div class="toolbar">
+      <input type="search" id="filter-search" placeholder="Поиск по имени файла…">
+      <div id="format-chips"></div>
+    </div>
+
+    <div class="table-wrap">
+      <table id="result-table">
+        <thead>
+          <tr>
+            <th class="col-idx" scope="col">№</th>
+            <th class="sortable" scope="col" data-sort="name">Имя файла</th>
+            <th class="sortable" scope="col" data-sort="format">Формат</th>
+            <th class="sortable" scope="col" data-sort="width">Размер, px</th>
+            <th class="sortable" scope="col" data-sort="dpi">Разрешение, dpi</th>
+            <th class="sortable" scope="col" data-sort="bitDepth">Глубина цвета</th>
+            <th scope="col">Сжатие</th>
+            <th scope="col" title="Дополнительные характеристики">Доп.</th>
+            <th class="sortable" scope="col" data-sort="sizeBytes">Размер файла</th>
+          </tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+
+    <div id="pagination">
+      <button type="button" class="btn btn-page" id="page-prev" aria-label="Предыдущая страница">←</button>
+      <span id="page-info"></span>
+      <button type="button" class="btn btn-page" id="page-next" aria-label="Следующая страница">→</button>
+    </div>
+  </main>
+
+  <aside id="drawer" hidden aria-label="Подробные сведения о файле">
+    <div id="drawer-header">
+      <span id="drawer-title"></span>
+      <button type="button" id="drawer-close" aria-label="Закрыть панель">×</button>
+    </div>
+    <div id="drawer-body"></div>
+  </aside>
+  <div id="drawer-overlay" hidden></div>
+
+  <div id="help-modal" hidden>
+    <div class="help-modal-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <h2 id="help-title">Справка: откуда берутся характеристики</h2>
+      <button type="button" id="help-close" aria-label="Закрыть справку">×</button>
+
+      <p class="help-intro">Программа читает только заголовки файлов — само изображение не декодируется. Ниже указано, из какого поля каждого формата берётся каждая характеристика.</p>
+
+      <section>
+        <h3>Имя файла</h3>
+        <p>Берётся из файловой системы и служит идентификатором записи в таблице.</p>
+      </section>
+
+      <section>
+        <h3>Размер в пикселях (ширина × высота)</h3>
+        <ul>
+          <li><b>JPEG</b> — маркер SOF (SOF0/SOF1/SOF2…): высота и ширина кадра.</li>
+          <li><b>GIF</b> — Logical Screen Descriptor: поля логического экрана.</li>
+          <li><b>TIFF</b> — теги 256 (ImageWidth) и 257 (ImageLength).</li>
+          <li><b>BMP</b> — поля biWidth / biHeight заголовка BITMAPINFOHEADER.</li>
+          <li><b>PNG</b> — чанк IHDR: поля Width и Height.</li>
+          <li><b>PCX</b> — вычисляется как xmax − xmin + 1 и ymax − ymin + 1.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>Разрешение (dpi)</h3>
+        <p>Определяет физический размер пикселя:</p>
+        <ul>
+          <li><b>JPEG</b> — плотность JFIF (маркер APP0) или Exif.</li>
+          <li><b>PNG</b> — чанк pHYs: пиксели на метр × 0,0254.</li>
+          <li><b>TIFF</b> — теги XResolution / YResolution + ResolutionUnit.</li>
+          <li><b>BMP</b> — biXPelsPerMeter / biYPelsPerMeter × 0,0254.</li>
+          <li><b>PCX</b> — поля hDPI / vDPI заголовка.</li>
+          <li><b>GIF</b> — разрешения не имеет.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>Глубина цвета (бит на пиксель)</h3>
+        <ul>
+          <li><b>JPEG</b> — точность отсчётов × число каналов.</li>
+          <li><b>GIF</b> — разрядность индекса палитры.</li>
+          <li><b>TIFF</b> — сумма значений тега BitsPerSample.</li>
+          <li><b>BMP</b> — поле biBitCount.</li>
+          <li><b>PNG</b> — бит на канал × число каналов.</li>
+          <li><b>PCX</b> — бит на плоскость × число плоскостей.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>Сжатие</h3>
+        <ul>
+          <li><b>JPEG</b> — DCT (дискретно-косинусное преобразование).</li>
+          <li><b>GIF</b> — LZW.</li>
+          <li><b>PNG</b> — Deflate.</li>
+          <li><b>TIFF</b> — тег Compression (LZW, PackBits, …).</li>
+          <li><b>BMP</b> — biCompression (BI_RGB, BI_RLE8, …).</li>
+          <li><b>PCX</b> — RLE.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>Столбец «Доп.»</h3>
+        <p>Число дополнительных характеристик файла. Клик по строке открывает подробности: таблицы квантования JPEG, палитры GIF, Exif и т.д. — каждая характеристика снабжена пояснением.</p>
+      </section>
+
+      <section>
+        <h3>Поддерживаемые форматы</h3>
+        <ul class="formats-list">
+          <li>JPG · JPEG · JFIF</li>
+          <li>GIF</li>
+          <li>TIF · TIFF</li>
+          <li>BMP · DIB</li>
+          <li>PNG</li>
+          <li>PCX</li>
+        </ul>
+      </section>
+    </div>
+  </div>
+
+  <script src="js/formats/jpeg.js"></script>
+  <script src="js/formats/gif.js"></script>
+  <script src="js/formats/tiff.js"></script>
+  <script src="js/formats/bmp.js"></script>
+  <script src="js/formats/png.js"></script>
+  <script src="js/formats/pcx.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
