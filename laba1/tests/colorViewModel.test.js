@@ -23,10 +23,10 @@ test("setHex(#ff0000) пересчитывает LAB от RGB-источника
 
   assert.equal(snapshot.origin, "rgb");
   assert.equal(snapshot.hex, "#ff0000");
-  assert.ok(close(snapshot.lab.l, 53.24, 0.02), `l=${snapshot.lab.l}`);
-  assert.ok(close(snapshot.lab.a, 80.09, 0.02), `a=${snapshot.lab.a}`);
-  assert.ok(close(snapshot.lab.b, 67.20, 0.02), `b=${snapshot.lab.b}`);
-  assert.ok(close(snapshot.xyz.x, 41.24, 0.02), `x=${snapshot.xyz.x}`);
+  assert.equal(snapshot.lab.l, 53);
+  assert.equal(snapshot.lab.a, 80);
+  assert.equal(snapshot.lab.b, 67);
+  assert.equal(snapshot.xyz.x, 41);
   assert.equal(snapshot.warning, "");
 });
 
@@ -68,10 +68,11 @@ test("смена источника света D65 → D50 сохраняет RG
   const snapshot = viewModel.getSnapshot();
 
   assert.deepEqual(snapshot.rgb, rgbBefore);
-  assert.ok(close(snapshot.xyz.x, 96.42, 0.01), `x=${snapshot.xyz.x}`);
-  assert.ok(close(snapshot.lab.l, 100, 1e-6), `l=${snapshot.lab.l}`);
-  assert.ok(close(snapshot.lab.a, 0, 1e-6), `a=${snapshot.lab.a}`);
-  assert.ok(close(snapshot.lab.b, 0, 1e-6), `b=${snapshot.lab.b}`);
+  // Проверяем округленное значение
+  assert.equal(snapshot.xyz.x, 96);
+  assert.equal(snapshot.lab.l, 100);
+  assert.equal(snapshot.lab.a, 0);
+  assert.equal(snapshot.lab.b, 0);
   assert.equal(snapshot.warning, "");
 });
 

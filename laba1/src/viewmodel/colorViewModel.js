@@ -37,10 +37,14 @@ export class ColorViewModel {
   }
 
   getSnapshot() {
+    const roundCoords = (coords) => Object.fromEntries(
+      Object.entries(coords).map(([key, val]) => [key, Math.round(val)])
+    );
+
     return {
-      rgb: { ...this.state.rgb },
-      xyz: { ...this.state.xyz },
-      lab: { ...this.state.lab },
+      rgb: roundCoords(this.state.rgb),
+      xyz: roundCoords(this.state.xyz),
+      lab: roundCoords(this.state.lab),
       hex: rgbToHex(this.state.rgb),
       warning: this.warning,
       origin: this.origin,
