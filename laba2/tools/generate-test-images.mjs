@@ -1,7 +1,13 @@
 #!/usr/bin/env node
+// Генератор тестовых изображений для парсеров заголовков (JPEG/GIF/TIFF/BMP/PNG/PCX).
+//
+// Режимы:
+//   node tools/generate-test-images.mjs              — 20 маленьких тестовых файлов → tests/images/
+//   node tools/generate-test-images.mjs --big [МиБ]  — демо-папка для демонстрации быстродействия
+//                                                     (по умолчанию 2048 МиБ ≈ 2 ГиБ) → demo-folder/
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, mkdirSync, openSync, writeFileSync, writeSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 function u8(v) {
@@ -286,9 +292,317 @@ const FILES = [
   ['pcx-24bit.pcx', buildPcx({ version: 3, nPlanes: 3, vgaPalette: false })]
 ];
 
-const isCli = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+// ---------------------------------------------------------------------------
+// Режим --big: папка большого объёма для демонстрации быстродействия.
+// Заголовки строятся обычными билдерами, тело файла (сотни килобайт — мегабайты)
+// дописывается нулевыми кусками поверх файлового дескриптора — без zeros()/pack(),
+// поэтому память не зависит от размера файла. ПКХ-файлы с VGA-палитрой получают
+// хвост 0x0C + 768 нулей последними 769 байтами файла.
+// ---------------------------------------------------------------------------
 
-if (isCli) {
+const MIB = 1024 * 1024;
+const BIG_DEFAULT_MIB = 2048;
+const BIG_REF_MIB = 2048; // объём, на который рассчитаны доли форматов
+const BIG_MIN_FILE_BYTES = 16 * 1024;
+const PAD_CHUNK = Buffer.alloc(MIB);
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function humanSize(bytes) {
+  if (bytes < 1024) return bytes + ' Б';
+  const units = ['КБ', 'МБ', 'ГБ'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  const text = value >= 100 ? value.toFixed(1) : value.toFixed(2);
+  return text.replace('.', ',') + ' ' + units[unit];
+}
+
+function pluralFiles(n) {
+  const d10 = n % 10;
+  const d100 = n % 100;
+  if (d10 === 1 && d100 !== 11) return n + ' файл';
+  if (d10 >= 2 && d10 <= 4 && (d100 < 10 || d100 >= 20)) return n + ' файла';
+  return n + ' файлов';
+}
+
+function writePadded(filePath, headerBytes, totalBytes, tailBytes) {
+  const header = Buffer.isBuffer(headerBytes) ? headerBytes : Buffer.from(headerBytes);
+  const tail = tailBytes
+    ? (Buffer.isBuffer(tailBytes) ? tailBytes : Buffer.from(tailBytes))
+    : null;
+  const tailLen = tail ? tail.length : 0;
+  const body = Math.max(0, totalBytes - header.length - tailLen);
+  const fd = openSync(filePath, 'w');
+  try {
+    writeSync(fd, header);
+    let left = body;
+    while (left > 0) {
+      const n = Math.min(left, PAD_CHUNK.length);
+      writeSync(fd, PAD_CHUNK, 0, n);
+      left -= n;
+    }
+    if (tail) writeSync(fd, tail);
+  } finally {
+    closeSync(fd);
+  }
+  return header.length + body + tailLen;
+}
+
+// BMP на много мегабайт нельзя строить через buildBmpInfo с большим height
+// (imageSize прошёл бы через zeros()), поэтому заголовок строится с height = 1,
+// а затем в буфере исправляются bfSize, biHeight и biSizeImage.
+function buildBigBmpHeader(width, height, xppm, yppm) {
+  const header = Buffer.from(buildBmpInfo({ width, height: 1, bpp: 24, xppm, yppm }));
+  const offBits = header.readUInt32LE(10);
+  const rowSize = Math.ceil((width * 24) / 32) * 4;
+  const pixelBytes = rowSize * height;
+  header.writeUInt32LE(offBits + pixelBytes, 2);
+  header.writeUInt32LE(height, 22);
+  header.writeUInt32LE(pixelBytes, 34);
+  return { header, totalBytes: offBits + pixelBytes };
+}
+
+function pcxVgaTail() {
+  const tail = new Uint8Array(769);
+  tail[0] = 0x0C;
+  return tail;
+}
+
+function planBmpJobs(count, perFile, jitter) {
+  const widths = [1920, 2560, 3840];
+  const ppms = [2835, 4724, 11811];
+  const jobs = [];
+  for (let i = 0; i < count; i++) {
+    const width = widths[i % widths.length];
+    const ppm = ppms[i % ppms.length];
+    const target = Math.round(perFile * jitter());
+    const rowSize = Math.ceil((width * 24) / 32) * 4;
+    const height = Math.max(1, Math.floor((target - 54) / rowSize));
+    const built = buildBigBmpHeader(width, height, ppm, ppm);
+    jobs.push({
+      format: 'BMP', ext: 'bmp', prefix: 'render', bytes: built.totalBytes,
+      write: (path) => writePadded(path, built.header, built.totalBytes)
+    });
+  }
+  return jobs;
+}
+
+function planPngJobs(count, perFile, jitter) {
+  const dims = [[1920, 1080], [2560, 1440], [3840, 2160], [1600, 1200]];
+  const ppm = [[2835, 2835], [11811, 11811], [5906, 5906]];
+  const indexedDims = [[320, 240], [256, 192]];
+  const jobs = [];
+  for (let i = 0; i < count; i++) {
+    const target = Math.round(perFile * jitter());
+    const p = ppm[i % ppm.length];
+    const d = dims[i % dims.length];
+    const ind = indexedDims[(i / 5 | 0) % indexedDims.length];
+    const opts = i % 5 === 4
+      ? { width: ind[0], height: ind[1], colorType: 3, bitDepth: 8,
+          plteColors: 256, ppux: p[0], ppuy: p[1] }
+      : { width: d[0], height: d[1], interlace: i % 3 === 1 ? 1 : 0, ppux: p[0], ppuy: p[1] };
+    jobs.push({
+      format: 'PNG', ext: 'png', prefix: 'shot', bytes: target,
+      write: (path) => writePadded(path, buildPng(opts), target)
+    });
+  }
+  return jobs;
+}
+
+function planTiffJobs(count, perFile, jitter) {
+  const dims = [[3200, 2400], [4000, 3000], [2400, 1600], [1024, 768]];
+  const compressions = [1, 5, 32773];
+  const resolutions = [300, 150, 600];
+  const jobs = [];
+  for (let i = 0; i < count; i++) {
+    const target = Math.round(perFile * jitter());
+    const d = dims[i % dims.length];
+    const res = resolutions[i % resolutions.length];
+    const opts = {
+      endian: i % 2 ? 'MM' : 'II',
+      width: d[0], height: d[1],
+      compression: compressions[i % compressions.length],
+      resUnit: i % 4 === 3 ? 3 : 2,
+      xres: res, yres: res
+    };
+    jobs.push({
+      format: 'TIFF', ext: 'tif', prefix: 'scan', bytes: target,
+      write: (path) => writePadded(path, buildTiff(opts), target)
+    });
+  }
+  return jobs;
+}
+
+function planGifJobs(count, perFile, jitter) {
+  const dims = [[800, 600], [640, 480], [1024, 768], [320, 240]];
+  const jobs = [];
+  for (let i = 0; i < count; i++) {
+    const target = Math.round(perFile * jitter());
+    const d = dims[i % dims.length];
+    const animated = i % 2 === 0;
+    const opts = {
+      version: '89a',
+      width: d[0], height: d[1],
+      gct: true, gctSize: 7,
+      frames: animated ? 2 + ((i >> 1) % 3) : 1,
+      transparentIndex: animated ? (i * 37) % 256 : null
+    };
+    jobs.push({
+      format: 'GIF', ext: 'gif', prefix: 'anim', bytes: target,
+      write: (path) => writePadded(path, buildGif(opts), target)
+    });
+  }
+  return jobs;
+}
+
+function planPcxJobs(count, perFile, jitter) {
+  const dims = [[640, 480], [800, 600], [1024, 768]];
+  const dpis = [96, 150, 300];
+  const jobs = [];
+  for (let i = 0; i < count; i++) {
+    const target = Math.round(perFile * jitter());
+    const d = dims[i % dims.length];
+    const dpi = dpis[i % dpis.length];
+    const is8Bit = i % 2 === 0;
+    const opts = {
+      version: is8Bit ? 5 : 3,
+      bpp: 8,
+      nPlanes: is8Bit ? 1 : 3,
+      xmin: 0, ymin: 0, xmax: d[0] - 1, ymax: d[1] - 1,
+      hdpi: dpi, vdpi: dpi,
+      vgaPalette: false,
+      dataSize: 64
+    };
+    const tail = is8Bit ? pcxVgaTail() : null;
+    jobs.push({
+      format: 'PCX', ext: 'pcx', prefix: 'art', bytes: target,
+      write: (path) => writePadded(path, buildPcx(opts), target, tail)
+    });
+  }
+  return jobs;
+}
+
+function planJpegJobs(budgetBytes, perFile, jitter) {
+  const dims = [[5472, 3648], [4000, 3000], [6000, 4000], [3840, 2160], [4920, 3264]];
+  const dpiVariants = [
+    { units: 2, xd: 72, yd: 72 },
+    { units: 2, xd: 300, yd: 300 },
+    { units: 3, xd: 28, yd: 28 }
+  ];
+  const jobs = [];
+  let left = budgetBytes;
+  let j = 0;
+  while (left >= 64 * 1024) {
+    let size = Math.round(perFile * jitter());
+    if (size < 64 * 1024) size = 64 * 1024;
+    if (size >= left || left - size < 64 * 1024) size = left;
+    const d = dims[j % dims.length];
+    const v = dpiVariants[j % dpiVariants.length];
+    const opts = {
+      width: d[0], height: d[1],
+      sof: j % 5 === 2 ? 0xC2 : 0xC0,
+      exif: j % 7 === 3,
+      units: v.units, xd: v.xd, yd: v.yd
+    };
+    jobs.push({
+      format: 'JPEG', ext: 'jpg', prefix: 'photo', bytes: size,
+      write: (path) => writePadded(path, buildJpeg(opts), size)
+    });
+    left -= size;
+    j++;
+  }
+  return jobs;
+}
+
+const BIG_FIXED_SPECS = [
+  { format: 'BMP', count: 30, mib: 5, plan: planBmpJobs },
+  { format: 'PNG', count: 30, mib: 2, plan: planPngJobs },
+  { format: 'TIFF', count: 20, mib: 1.5, plan: planTiffJobs },
+  { format: 'GIF', count: 10, mib: 0.75, plan: planGifJobs },
+  { format: 'PCX', count: 10, mib: 0.75, plan: planPcxJobs }
+];
+
+export function generateBigFolder(targetMiB, outDir) {
+  const targetBytes = Math.round(targetMiB * MIB);
+  const rand = mulberry32(0x1B16C0DE);
+  const jitter = () => 0.8 + rand() * 0.4;
+
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, '.gitignore'), '*\n!.gitignore\n');
+
+  const fixedJobs = {};
+  let fixedPlanned = 0;
+  for (const spec of BIG_FIXED_SPECS) {
+    const budget = Math.round(targetBytes * spec.count * spec.mib / BIG_REF_MIB);
+    let perFile = Math.min(budget / spec.count, spec.mib * MIB);
+    perFile = Math.max(perFile, BIG_MIN_FILE_BYTES);
+    const count = Math.max(1, Math.round(budget / perFile));
+    const jobs = spec.plan(count, perFile, jitter);
+    fixedJobs[spec.format] = jobs;
+    for (const job of jobs) fixedPlanned += job.bytes;
+  }
+
+  const jpegBudget = Math.max(0, targetBytes - fixedPlanned);
+  let jpegJobs = [];
+  if (jpegBudget >= 64 * 1024) {
+    let count = Math.max(1, Math.round(jpegBudget / (3.25 * MIB)));
+    let perFile = Math.min(jpegBudget / count, 4.5 * MIB);
+    count = Math.max(1, Math.round(jpegBudget / perFile));
+    perFile = Math.min(jpegBudget / count, 4.5 * MIB);
+    jpegJobs = planJpegJobs(jpegBudget, perFile, jitter);
+  }
+
+  const queues = [jpegJobs, fixedJobs.BMP, fixedJobs.PNG,
+                  fixedJobs.TIFF, fixedJobs.GIF, fixedJobs.PCX];
+  const ordered = [];
+  const cursors = queues.map(() => 0);
+  for (;;) {
+    let took = false;
+    for (let q = 0; q < queues.length; q++) {
+      if (cursors[q] < queues[q].length) {
+        ordered.push(queues[q][cursors[q]++]);
+        took = true;
+      }
+    }
+    if (!took) break;
+  }
+
+  const absDir = resolve(outDir);
+  console.log('Генерация демо-папки ~' + humanSize(targetBytes) + ' → ' + absDir);
+  const stats = {};
+  let written = 0;
+  let number = 0;
+  for (const job of ordered) {
+    const name = job.prefix + '-' + String(++number).padStart(4, '0') + '.' + job.ext;
+    const bytes = job.write(join(outDir, name));
+    const s = stats[job.format] || (stats[job.format] = { count: 0, bytes: 0 });
+    s.count++;
+    s.bytes += bytes;
+    written += bytes;
+  }
+
+  for (const format of ['JPEG', 'BMP', 'PNG', 'TIFF', 'GIF', 'PCX']) {
+    const s = stats[format] || { count: 0, bytes: 0 };
+    console.log(format.padEnd(5) + ': ' + pluralFiles(s.count) + ', ' + humanSize(s.bytes));
+  }
+  console.log('Готово: ' + pluralFiles(number) + ', ' + humanSize(written) + ' → ' + absDir);
+  console.log('Эта папка — набор для демонстрации быстродействия обработки: выберите её в приложении.');
+  return { files: number, bytes: written, dir: absDir };
+}
+
+function writeTestImages() {
   const outDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'images');
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, '.gitignore'), '*\n!.gitignore\n');
@@ -297,4 +611,33 @@ if (isCli) {
     console.log(name.padEnd(28) + String(bytes.length).padStart(6) + ' байт');
   }
   console.log('Записано файлов: ' + FILES.length + ' → ' + outDir);
+}
+
+const USAGE = [
+  'Использование:',
+  '  node tools/generate-test-images.mjs              20 тестовых файлов → tests/images/',
+  '  node tools/generate-test-images.mjs --big [МиБ]  демо-папка для демонстрации быстродействия → demo-folder/',
+  '                                                   МиБ — число ≥ 1 (по умолчанию 2048)'
+].join('\n');
+
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isCli) {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    writeTestImages();
+  } else if (args[0] === '--big' && args.length <= 2) {
+    let mib = BIG_DEFAULT_MIB;
+    if (args.length === 2) {
+      if (!/^\d+(\.\d+)?$/.test(args[1]) || Number(args[1]) < 1) {
+        console.error(USAGE);
+        process.exit(1);
+      }
+      mib = Number(args[1]);
+    }
+    generateBigFolder(mib, join(dirname(fileURLToPath(import.meta.url)), '..', 'demo-folder'));
+  } else {
+    console.error(USAGE);
+    process.exit(1);
+  }
 }

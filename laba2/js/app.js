@@ -46,6 +46,8 @@
     statError: byId('stat-error'),
     statSkipped: byId('stat-skipped'),
     statTime: byId('stat-time'),
+    statVolume: byId('stat-volume'),
+    statSpeed: byId('stat-speed'),
     statFormats: byId('stat-formats'),
     filterSearch: byId('filter-search'),
     formatChips: byId('format-chips'),
@@ -101,7 +103,8 @@
     if (bytes == null || isNaN(bytes)) return '—';
     if (bytes < 1024) return bytes + ' Б';
     if (bytes < 1048576) return (bytes / 1024).toFixed(1).replace('.', ',') + ' КБ';
-    return (bytes / 1048576).toFixed(2).replace('.', ',') + ' МБ';
+    if (bytes < 1073741824) return (bytes / 1048576).toFixed(2).replace('.', ',') + ' МБ';
+    return (bytes / 1073741824).toFixed(2).replace('.', ',') + ' ГБ';
   }
 
   function messageOf(error) {
@@ -308,7 +311,7 @@
     show(dom.progressWrap);
     dom.progressBar.style.width = '0%';
     dom.progressText.textContent =
-      'Обработано 0 из ' + rows.length + ' · ошибок 0 · 0,0 с';
+      'Обработано 0 из ' + rows.length + ' · 0 Б · ошибок 0 · 0,0 с';
 
     dom.btnCsv.disabled = true;
     dom.btnClear.disabled = true;
@@ -326,6 +329,7 @@
     var started = performance.now();
     var total = batch.length;
     var done = 0;
+    var doneBytes = 0;
     var errors = 0;
     var nextIndex = 0;
     var lastPaint = 0;
@@ -336,8 +340,8 @@
       lastPaint = now;
       dom.progressBar.style.width = (total ? (done / total) * 100 : 0).toFixed(2) + '%';
       dom.progressText.textContent =
-        'Обработано ' + done + ' из ' + total + ' · ошибок ' + errors + ' · ' +
-        formatSeconds(now - started) + ' с';
+        'Обработано ' + done + ' из ' + total + ' · ' + humanSize(doneBytes) +
+        ' · ошибок ' + errors + ' · ' + formatSeconds(now - started) + ' с';
     }
 
     async function worker() {
@@ -353,6 +357,7 @@
         }
         if (row.status === 'error') errors++;
         done++;
+        doneBytes += row.sizeBytes;
         if (token === runToken) paint(false);
       }
     }
@@ -375,6 +380,7 @@
     var okCount = 0;
     var errorCount = 0;
     var skippedCount = 0;
+    var totalBytes = 0;
     var formatCounts = {};
 
     batch.forEach(function (row) {
@@ -386,6 +392,7 @@
       } else {
         skippedCount++;
       }
+      totalBytes += row.sizeBytes;
     });
 
     dom.statTotal.textContent = 'Файлов: ' + batch.length;
@@ -393,6 +400,12 @@
     dom.statError.textContent = 'Ошибки: ' + errorCount;
     dom.statSkipped.textContent = 'Пропущено: ' + skippedCount;
     dom.statTime.textContent = 'Время: ' + formatSeconds(elapsedMs) + ' с';
+    dom.statVolume.textContent = 'Объём: ' + humanSize(totalBytes);
+
+    var seconds = elapsedMs / 1000;
+    dom.statSpeed.textContent = seconds > 0
+      ? 'Скорость: ' + humanSize(totalBytes / seconds) + '/с'
+      : 'Скорость: —';
 
     var formats = Object.keys(formatCounts).sort();
     dom.statFormats.textContent = formats.length
